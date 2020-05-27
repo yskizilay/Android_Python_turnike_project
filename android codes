@@ -1,0 +1,662 @@
+package com.example.y_kizilay.yolcu_tanima;
+
+import android.app.Activity;
+import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.RemoteException;
+import android.preference.PreferenceManager;
+import android.util.Log;
+import android.view.View;
+import android.view.Window;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import com.amazonaws.auth.CognitoCachingCredentialsProvider;
+import com.amazonaws.mobileconnectors.iot.AWSIotKeystoreHelper;
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttClientStatusCallback;
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttManager;
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttNewMessageCallback;
+import com.amazonaws.mobileconnectors.iot.AWSIotMqttQos;
+import com.amazonaws.regions.Region;
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.iot.AWSIotClient;
+import com.amazonaws.services.iot.model.AttachPrincipalPolicyRequest;
+import com.amazonaws.services.iot.model.CreateKeysAndCertificateRequest;
+import com.amazonaws.services.iot.model.CreateKeysAndCertificateResult;
+import com.google.gson.Gson;
+
+import org.altbeacon.beacon.Beacon;
+import org.altbeacon.beacon.BeaconConsumer;
+import org.altbeacon.beacon.BeaconManager;
+import org.altbeacon.beacon.BeaconParser;
+import org.altbeacon.beacon.MonitorNotifier;
+import org.altbeacon.beacon.RangeNotifier;
+
+import java.io.UnsupportedEncodingException;
+import java.security.KeyStore;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+
+public class MainActivity extends Activity implements BeaconConsumer {
+
+
+    private static final String CUSTOMER_SPECIFIC_ENDPOINT = "**********.iot.eu-central-1.amazonaws.com";
+
+    // --- Constants to modify per your configuration ---
+    // Cognito pool ID. For this app, pool needs to be unauthenticated pool with
+    // AWS IoT permissions.
+    private static final String COGNITO_POOL_ID = "OtelloCognito";
+    // Name of the AWS IoT policy to attach to a newly created certificate
+    private static final String AWS_IOT_POLICY_NAME = "Otello-Cognito-Policy";
+    // Region of AWS IoT
+    private static final Regions MY_REGION = Regions.EU_CENTRAL_1;
+    // Filename of KeyStore file on the filesystem
+    private static final String KEYSTORE_NAME = "otello.bks";
+    // Password for the private key in the KeyStore
+    private static final String KEYSTORE_PASSWORD = "otello";
+    // Certificate and key aliases in the KeyStore
+    private static final String CERTIFICATE_ID = "otello";
+
+    private BeaconManager beaconManager;
+    String Tag = "Beacon";
+    Map<String, String> map = new HashMap<String, String>();
+
+    PublishModel pm = new PublishModel();
+    SharedPreferences preferences;
+    SharedPreferences.Editor editor;
+    LinearLayout layout;
+    ProgressBar progressBar;
+    private Handler handler, handler2;
+    Button btnConnect;
+    Button btnDisconnect;
+    Button subbutton;
+    TextView tvStatus;
+    TextView firstname;
+    TextView welcome;
+    TextView showname;
+    AWSIotClient mIotAndroidClient;
+    AWSIotMqttManager mqttManager;
+    String clientId;
+    String keystorePath;
+    String keystoreName;
+    String keystorePassword;
+    KeyStore clientKeyStore = null;
+    String certificateId;
+    String topic = "fromandroidtorasp";
+    String topic2 = "fromrasptoandroid";
+    Boolean again = false, exit = false;
+    CognitoCachingCredentialsProvider credentialsProvider;
+    static final String LOG_TAG = "debug_mode";
+
+    View.OnClickListener connectClick = new View.OnClickListener() {
+        @Override
+        public void onClick(View v) {
+
+            //Log.d(LOG_TAG, "clientId = " + clientId);
+
+            try {
+                mqttManager.connect(clientKeyStore, new AWSIotMqttClientStatusCallback() {
+                    @Override
+                    public void onStatusChanged(final AWSIotMqttClientStatus status,
+                                                final Throwable throwable) {
+                        //Log.d(LOG_TAG, "Status = " + String.valueOf(status));
+
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (status == AWSIotMqttClientStatus.Connecting) {
+                                    tvStatus.setText("Connecting...");
+
+                                } else if (status == AWSIotMqttClientStatus.Connected) {
+                                    tvStatus.setText("Connected");
+
+                                } else if (status == AWSIotMqttClientStatus.Reconnecting) {
+                                    if (throwable != null) {
+
+                                    }
+                                    tvStatus.setText("Reconnecting");
+                                } else if (status == AWSIotMqttClientStatus.ConnectionLost) {
+                                    if (throwable != null) {
+
+                                    }
+                                    tvStatus.setText("Disconnected");
+                                } else {
+                                    tvStatus.setText("Disconnected");
+
+                                }
+                            }
+                        });
+                    }
+                });
+            } catch (final Exception e) {
+                //Log.e(LOG_TAG, "Connection error.", e);
+                tvStatus.setText("Error! " + e.getMessage());
+            }
+        }
+    };
+    View.OnClickListener disconnectClick = new View.OnClickListener() {
+        @Override
+        public void onClick(View v) {
+
+            try {
+                mqttManager.disconnect();
+            } catch (Exception e) {
+                //Log.e(LOG_TAG, "Disconnect error.", e);
+            }
+
+        }
+    };
+    View.OnClickListener subscribe = new View.OnClickListener() {
+        @Override
+        public void onClick(View v) {
+
+
+            //Log.d(LOG_TAG, "topic = " + topic);
+
+            try {
+                mqttManager.subscribeToTopic(topic2, AWSIotMqttQos.QOS0,
+                        new AWSIotMqttNewMessageCallback() {
+                            @Override
+                            public void onMessageArrived(final String topic, final byte[] data) {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        try {
+                                            String message = new String(data, "UTF-8");
+                                            //Log.d(LOG_TAG, "Message arrived:");
+                                            //7Log.d(LOG_TAG, "   Topic: " + topic);
+                                            // Log.d(LOG_TAG, " Message: " + message);
+
+                                        } catch (UnsupportedEncodingException e) {
+                                            Log.e(LOG_TAG, "Message encoding error.", e);
+                                        }
+                                    }
+                                });
+                            }
+                        });
+            } catch (Exception e) {
+                //Log.e(LOG_TAG, "Subscription error.", e);
+            }
+        }
+    };
+
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
+        setContentView(R.layout.activity_main);
+
+
+        beaconManager = BeaconManager.getInstanceForApplication(this);
+        beaconManager.getBeaconParsers().add(new BeaconParser().
+                setBeaconLayout("m:2-3=0215,i:4-19,i:20-21,i:22-23,p:24-24"));
+        beaconManager.setForegroundScanPeriod(400L);
+        String id = "b9407f30-f5f8-466e-aff9-25556b57fe6d2203412052";
+        map.put(id.toLowerCase(), "both_of");
+
+        preferences = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
+        editor = preferences.edit();
+
+
+        DateFormat df = new SimpleDateFormat("EEE, d MMM yyyy, HH:mm");
+        String date = df.format(Calendar.getInstance().getTime());
+        pm.setDate(date);
+        pm.setDistance("");
+
+        tvStatus = (TextView) findViewById(R.id.tvStatus);
+        showname = (TextView) findViewById(R.id.showname);
+        welcome = (TextView) findViewById(R.id.welcome);
+        layout = (LinearLayout) findViewById(R.id.layout);
+        progressBar = (ProgressBar) findViewById(R.id.progress_button);
+        firstname = (TextView) findViewById(R.id.firstname);
+        btnConnect = (Button) findViewById(R.id.btnConnect);
+        btnConnect.setOnClickListener(connectClick);
+        btnConnect.setEnabled(true);
+        clientId = UUID.randomUUID().toString();
+
+        subbutton = (Button) findViewById(R.id.subbutton);
+        subbutton.setOnClickListener(subscribe);
+        subbutton.setEnabled(true);
+
+        btnDisconnect = (Button) findViewById(R.id.btnDisconnect);
+        btnDisconnect.setOnClickListener(disconnectClick);
+        credentialsProvider = new CognitoCachingCredentialsProvider(
+                getApplicationContext(), // context
+                COGNITO_POOL_ID, // Identity Pool ID
+                MY_REGION // Region
+        );
+
+        handler = new Handler();
+        handler2 = new Handler();
+
+
+        if (!preferences.getString("firstname", "").equals("")) {
+            firstname.setText(preferences.getString("firstname", ""));
+            pm.setFirstname(firstname.getText().toString());
+        }
+
+        Region region = Region.getRegion(MY_REGION);
+
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                progressBar.setVisibility(View.INVISIBLE);
+                layout.setBackgroundColor(Color.RED);
+                Log.i(Tag, "Progressbar make invisible");
+
+
+            }
+        });
+
+        // MQTT Client
+        mqttManager = new AWSIotMqttManager(clientId, CUSTOMER_SPECIFIC_ENDPOINT);
+
+        // Set keepalive to 10 seconds.  Will recognize disconnects more quickly but will also send
+        // MQTT pings every 10 seconds.
+        mqttManager.setKeepAlive(10);
+
+        // Set Last Will and Testament for MQTT.  On an unclean disconnect (loss of connection)
+        // AWS IoT will publish this message to alert other clients.
+//        AWSIotMqttLastWillAndTestament lwt = new AWSIotMqttLastWillAndTestament("my/lwt/topic",
+//                "Android client lost connection", AWSIotMqttQos.QOS0);
+//        mqttManager.setMqttLastWillAndTestament(lwt);
+
+        // IoT Client (for creation of certificate if needed)
+        mIotAndroidClient = new AWSIotClient(credentialsProvider);
+        mIotAndroidClient.setRegion(region);
+
+        //keystorePath = getFilesDir().getPath();
+        keystorePath = Environment.getExternalStorageDirectory().toString() + "/Download";
+
+        keystoreName = KEYSTORE_NAME;
+        keystorePassword = KEYSTORE_PASSWORD;
+        certificateId = CERTIFICATE_ID;
+
+        // To load cert/key from keystore on filesystem
+        try {
+            if (AWSIotKeystoreHelper.isKeystorePresent(keystorePath, keystoreName)) {
+                if (AWSIotKeystoreHelper.keystoreContainsAlias(certificateId, keystorePath,
+                        keystoreName, keystorePassword)) {
+                    //Log.i(LOG_TAG, "Certificate " + certificateId
+                    //     + " found in keystore - using for MQTT.");
+                    // load keystore from file into memory to pass on connection
+                    clientKeyStore = AWSIotKeystoreHelper.getIotKeystore(certificateId,
+                            keystorePath, keystoreName, keystorePassword);
+                    btnConnect.setEnabled(true);
+                } else {
+                    Log.i(LOG_TAG, "Key/cert " + certificateId + " not found in keystore.");
+                }
+            } else {
+                Log.i(LOG_TAG, "Keystore " + keystorePath + "/" + keystoreName + " not found.");
+            }
+        } catch (Exception e) {
+            //Log.e(LOG_TAG, "An error occurred retrieving cert/key from keystore.", e);
+        }
+
+        if (clientKeyStore == null) {
+            Log.i(LOG_TAG, "Cert/key was not found in keystore - creating new key and certificate.");
+
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        CreateKeysAndCertificateRequest createKeysAndCertificateRequest =
+                                new CreateKeysAndCertificateRequest();
+                        createKeysAndCertificateRequest.setSetAsActive(true);
+                        final CreateKeysAndCertificateResult createKeysAndCertificateResult;
+                        createKeysAndCertificateResult =
+                                mIotAndroidClient.createKeysAndCertificate(createKeysAndCertificateRequest);
+                        AWSIotKeystoreHelper.saveCertificateAndPrivateKey(certificateId,
+                                createKeysAndCertificateResult.getCertificatePem(),
+                                createKeysAndCertificateResult.getKeyPair().getPrivateKey(),
+                                keystorePath, keystoreName, keystorePassword);
+
+                        // load keystore from file into memory to pass on
+                        // connection
+                        clientKeyStore = AWSIotKeystoreHelper.getIotKeystore(certificateId,
+                                keystorePath, keystoreName, keystorePassword);
+
+                        AttachPrincipalPolicyRequest policyAttachRequest =
+                                new AttachPrincipalPolicyRequest();
+                        policyAttachRequest.setPolicyName(AWS_IOT_POLICY_NAME);
+                        policyAttachRequest.setPrincipal(createKeysAndCertificateResult
+                                .getCertificateArn());
+                        mIotAndroidClient.attachPrincipalPolicy(policyAttachRequest);
+
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                btnConnect.setEnabled(true);
+                            }
+                        });
+                    } catch (Exception e) {
+
+                    }
+                }
+            }).start();
+        }
+        try {
+            mqttManager.connect(clientKeyStore, new AWSIotMqttClientStatusCallback() {
+                @Override
+                public void onStatusChanged(final AWSIotMqttClientStatus status,
+                                            final Throwable throwable) {
+                    //Log.d(LOG_TAG, "Status = " + String.valueOf(status));
+
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (status == AWSIotMqttClientStatus.Connecting) {
+                                tvStatus.setText("Connecting...");
+
+                            } else if (status == AWSIotMqttClientStatus.Connected) {
+                                tvStatus.setText("Connected");
+
+                            } else if (status == AWSIotMqttClientStatus.Reconnecting) {
+                                if (throwable != null) {
+
+                                }
+                                tvStatus.setText("Reconnecting");
+                            } else if (status == AWSIotMqttClientStatus.ConnectionLost) {
+                                if (throwable != null) {
+
+                                }
+                                tvStatus.setText("Disconnected");
+                            } else {
+                                tvStatus.setText("Disconnected");
+
+                            }
+                        }
+                    });
+                }
+            });
+        } catch (final Exception e) {
+            //Log.e(LOG_TAG, "Connection error.", e);
+            tvStatus.setText("Error! " + e.getMessage());
+        }
+
+    }
+
+
+    @Override
+    public void onBeaconServiceConnect() {
+        final org.altbeacon.beacon.Region region = new org.altbeacon.beacon.Region("myBeaons", null, null, null);
+
+        beaconManager.addMonitorNotifier(new MonitorNotifier() {
+            @Override
+            public void didEnterRegion(org.altbeacon.beacon.Region region) {
+                try {
+                    Log.d(Tag, "didEnterRegion");
+                    beaconManager.startRangingBeaconsInRegion(region);
+                } catch (RemoteException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void didExitRegion(org.altbeacon.beacon.Region region) {
+                try {
+                    Log.d(Tag, "didExitRegion");
+                    beaconManager.stopRangingBeaconsInRegion(region);
+                } catch (RemoteException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void didDetermineStateForRegion(int i, org.altbeacon.beacon.Region region) {
+
+            }
+        });
+
+        Log.i(Tag, "onBeaconServiceConnect");
+        beaconManager.addRangeNotifier(new RangeNotifier() {
+
+                                           @Override
+                                           public void didRangeBeaconsInRegion(Collection<Beacon> beacons, final org.altbeacon.beacon.Region region) {
+
+                                               Log.i(Tag, "didRangeBeaconsInRegion");
+
+
+                                               if (beacons.size() > 0) {
+                                                   String beaconId = "";
+                                                   String status = "";
+                                                   String key = "";
+
+
+                                                   Log.i(Tag, "beacons.size()");
+
+                                                   for (final Beacon beaconid : beacons) {
+                                                       Log.i(Tag, "beaconid_for");
+
+                                                       String fullid = beaconid.getId1().toString().toLowerCase() + beaconid.getId2().toString().toLowerCase() + beaconid.getId3().toString().toLowerCase();
+                                                       String value = map.get(fullid);
+
+                                                       if (value != null && value != "") {
+
+
+                                                           if (beaconid.getDistance() > 1) {
+
+                                                               try {
+                                                                   beaconManager.stopRangingBeaconsInRegion(region);
+                                                               } catch (RemoteException e) {
+                                                                   e.printStackTrace();
+                                                               }
+                                                               if (again == false) {
+                                                                   runOnUiThread(new Runnable() {
+                                                                       @Override
+                                                                       public void run() {
+                                                                           welcome.setText("Dijital İnovasyon Odasına çok yakınsın");
+                                                                           showname.setText("İnovasyon Odamıza Bekleriz...");
+                                                                           exit = true;
+                                                                           pm.setDistance("FALSE");
+                                                                           final String msg = new Gson().toJson(pm);
+                                                                           try {
+                                                                               mqttManager.publishString(msg, topic, AWSIotMqttQos.QOS0);
+                                                                           } catch (Exception e) {
+                                                                               //Log.e(LOG_TAG, "Publish error.", e);
+                                                                           }
+                                                                       }
+                                                                   });
+                                                               }
+                                                               if (again == true) {
+                                                                   runOnUiThread(new Runnable() {
+                                                                       @Override
+                                                                       public void run() {
+                                                                           welcome.setText("Sanırım İnovasyon Odasından ayrıldınız");
+                                                                           showname.setText("Yine Bekleriz...");
+                                                                           handler.postDelayed(new Runnable() {
+                                                                               @Override
+                                                                               public void run() {
+                                                                                   runOnUiThread(new Runnable() {
+                                                                                       @Override
+                                                                                       public void run() {
+                                                                                           again = false;
+                                                                                       }
+                                                                                   });
+                                                                               }
+                                                                           }, 5000);
+                                                                       }
+                                                                   });
+
+                                                               }
+                                                               if (progressBar.getVisibility() == View.VISIBLE) {
+                                                                   runOnUiThread(new Runnable() {
+                                                                       @Override
+                                                                       public void run() {
+                                                                           progressBar.setVisibility(View.INVISIBLE);
+                                                                           Log.i(Tag, "Progressbar make visible");
+                                                                       }
+                                                                   });
+                                                               }
+                                                               handler2.postDelayed(new Runnable() {
+                                                                   @Override
+                                                                   public void run() {
+                                                                       runOnUiThread(new Runnable() {
+                                                                           @Override
+                                                                           public void run() {
+                                                                               try {
+                                                                                   beaconManager.startRangingBeaconsInRegion(region);
+                                                                               } catch (RemoteException e) {
+                                                                                   e.printStackTrace();
+                                                                               }
+                                                                           }
+                                                                       });
+                                                                   }
+                                                               }, 2000);
+                                                           }
+
+                                                           if (beaconid.getDistance() <= 0.4) {
+                                                               try {
+                                                                   beaconManager.stopRangingBeaconsInRegion(region);
+                                                               } catch (RemoteException e) {
+                                                                   e.printStackTrace();
+                                                               }
+                                                               if (progressBar.getVisibility() == View.INVISIBLE) {
+                                                                   runOnUiThread(new Runnable() {
+                                                                       @Override
+                                                                       public void run() {
+                                                                           progressBar.setVisibility(View.VISIBLE);
+                                                                           Log.i(Tag, "Progressbar make visible");
+                                                                       }
+                                                                   });
+                                                               }
+
+
+                                                               final String finalKey = key;
+                                                               final String finalStatus = status;
+                                                               SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMdd HH:mm:ss a");
+                                                               String currentDateandTime = sdf.format(new Date());
+                                                               Log.i(Tag, "inside");
+
+                                                               handler.postDelayed(new Runnable() {
+                                                                   @Override
+                                                                   public void run() {
+                                                                       runOnUiThread(new Runnable() {
+                                                                           @Override
+                                                                           public void run() {
+                                                                               progressBar.setVisibility(View.INVISIBLE);
+                                                                               layout.setBackgroundColor(Color.GREEN);
+                                                                               Toast.makeText(getApplicationContext(), "beacon id= ", Toast.LENGTH_LONG).show();
+                                                                               editor.putString("firstname", firstname.getText().toString());
+                                                                               editor.apply();
+                                                                               showname.setText(firstname.getText().toString());
+                                                                               welcome.setText("Dijital İnovasyon Odasına Hoşgeldiniz");
+                                                                               DateFormat df = new SimpleDateFormat("EEE, d MMM yyyy, HH:mm");
+                                                                               String date = df.format(Calendar.getInstance().getTime());
+                                                                               pm.setDate(date);
+                                                                               pm.setFirstname(firstname.getText().toString());
+                                                                               pm.setDistance("TRUE");
+                                                                               final String msg = new Gson().toJson(pm);
+                                                                               try {
+                                                                                   mqttManager.publishString(msg, topic, AWSIotMqttQos.QOS0);
+                                                                               } catch (Exception e) {
+                                                                                   //Log.e(LOG_TAG, "Publish error.", e);
+                                                                               }
+                                                                           }
+                                                                       });
+                                                                   }
+                                                               }, 750);
+
+                                                               handler.postDelayed(new Runnable() {
+                                                                   @Override
+                                                                   public void run() {
+                                                                       runOnUiThread(new Runnable() {
+                                                                           @Override
+                                                                           public void run() {
+                                                                               layout.setBackgroundColor(Color.RED);
+                                                                               again = true;
+                                                                               try {
+                                                                                   beaconManager.startRangingBeaconsInRegion(region);
+                                                                               } catch (RemoteException e) {
+                                                                                   e.printStackTrace();
+                                                                               }
+                                                                           }
+                                                                       });
+                                                                   }
+                                                               }, 5000);
+
+
+                                                           }
+
+
+                                                       }
+                                                       if (progressBar.getVisibility() == View.VISIBLE) {
+                                                           runOnUiThread(new Runnable() {
+                                                               @Override
+                                                               public void run() {
+                                                                   progressBar.setVisibility(View.INVISIBLE);
+                                                               }
+                                                           });
+                                                       }
+
+                                                   }
+                                               }
+
+                                           }
+
+                                       }
+
+        );
+
+        try
+
+        {
+            beaconManager.startRangingBeaconsInRegion(new org.altbeacon.beacon.Region("myRangingUniqueId", null, null, null));
+        } catch (
+                RemoteException e
+                )
+
+        {
+        }
+
+
+    }
+
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+
+    }
+
+    @Override
+    protected void onStop() {
+
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onResume() {
+
+        super.onResume();
+        beaconManager.bind(this);
+
+    }
+
+    @Override
+    protected void onPause() {
+
+        super.onStop();
+        beaconManager.unbind(this);
+    }
+}
+
